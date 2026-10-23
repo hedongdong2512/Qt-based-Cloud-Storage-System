@@ -1,0 +1,22 @@
+# Qt 构建产物
+*.pro.user
+*.pro.user.*
+*.user
+build*/
+bin/
+obj/
+
+# C++
+*.o
+*.obj
+*.exe
+*.pdb
+
+# IDE / 系统
+.vs/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 运行时生成的文件系统
+filesys/
