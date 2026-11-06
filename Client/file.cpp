@@ -262,6 +262,37 @@ void File::on_upload_PB_clicked()
     QFile file(m_strUploadFilePath);
     qint64 fileSize = file.size();
     memcpy(pdu->caData+32, &fileSize, sizeof(qint64));
+    //caData+40 覆盖标志：首次发起上传时为0，优先尝试断点续传
+    char chOverwrite = 0;
+    memcpy(pdu->caData+40, &chOverwrite, sizeof(char));
+    memcpy(pdu->caMsg, m_strCurPath.toStdString().c_str(), m_strCurPath.toStdString().size());
+    Client::getInstance().sendMsg(pdu);
+}
+
+void File::on_download_PB_clicked()
+{
+    //获取用户选择的文件并判空
+    QListWidgetItem* pItem = ui->listWidget->currentItem();
+    if (pItem == NULL) {
+        QMessageBox::information(this, "下载文件", "请选择要下载的文件");
+        return;
+    }
+    //判断选择的必须是普通文件
+    foreach(FileInfo* pFileInfo, m_pFileInfoList) {
+        if (pItem->text() == pFileInfo->caName && pFileInfo->iFileType != 1) {
+            QMessageBox::warning(this, "下载文件", "选择的不是文件，文件夹不支持下载");
+            return;
+        }
+    }
+    //选择本地保存路径
+    QString strSavePath = QFileDialog::getSaveFileName(this, "下载文件", pItem->text());
+    if (strSavePath.isEmpty()) {
+        return;
+    }
+    m_strDownloadSavePath = strSavePath;
+    //caData 放文件名，caMsg 放服务器端目录路径
+    PDU* pdu = mkPDU(ENUM_MSG_TYPE_DOWNLOAD_FILE_REQUEST, m_strCurPath.toStdString().size()+1);
+    memcpy(pdu->caData, pItem->text().toStdString().c_str(), 32);
     memcpy(pdu->caMsg, m_strCurPath.toStdString().c_str(), m_strCurPath.toStdString().size());
     Client::getInstance().sendMsg(pdu);
 }

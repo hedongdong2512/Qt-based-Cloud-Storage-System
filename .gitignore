@@ -20,3 +20,18 @@ Thumbs.db
 
 # 运行时生成的文件系统
 filesys/
+
+# qmake 本地构建产物
+release/
+debug/
+Makefile*
+.qmake.stash
+
+# 本地启动脚本（含本机数据库密码，不入库）
+start_server.bat
+
+# qmake 生成文件
+object_script.*
+ui_*.h
+moc_*.cpp
+qrc_*.cpp

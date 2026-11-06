@@ -29,10 +29,10 @@ void MyTcpServer::deleteSocket(MyTcpSocket *mysocket)
     mysocket = NULL;
 }
 
-void MyTcpServer::resend(char *caTarName, PDU *pdu)
+bool MyTcpServer::resend(char *caTarName, PDU *pdu)
 {
     if (caTarName == NULL || pdu == NULL) {
-        return;
+        return false;
     }
     for (int i = 0; i < m_tcpSocketList.size(); i++) {
         if (caTarName == m_tcpSocketList.at(i)->m_strLoginName) {
@@ -43,6 +43,8 @@ void MyTcpServer::resend(char *caTarName, PDU *pdu)
                      << "caData" << pdu->caData
                      << "caData+32" << pdu->caData+32
                      << "caMsg" << pdu->caMsg;
+            return true;    //找到目标即发送，同名多连接时只转发一份
         }
     }
+    return false;           //目标不在线，未找到对应连接
 }

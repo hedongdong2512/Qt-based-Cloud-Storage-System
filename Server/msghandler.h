@@ -5,6 +5,7 @@
 
 #include <QFile>
 #include <QObject>
+#include <QTcpSocket>
 
 class MsgHandler
 {
@@ -33,6 +34,8 @@ public:
     bool copyDir(QString strSrcDir, QString strDestDir);
     PDU* uploadFileInit();
     PDU* uploadFileData();
+    PDU* downloadFile(QTcpSocket* socket);          //文件下载：应答+分块推送
+    PDU* offlineMsg();                              //登录后拉取Redis离线消息
 };
 
 #endif // MSGHANDLER_H

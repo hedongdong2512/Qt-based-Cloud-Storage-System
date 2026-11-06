@@ -23,6 +23,7 @@ SOURCES += \
     mytcpsocket.cpp \
     operatedb.cpp \
     protocol.cpp \
+    redisclient.cpp \
     server.cpp
 
 HEADERS += \
@@ -32,6 +33,7 @@ HEADERS += \
     mytcpsocket.h \
     operatedb.h \
     protocol.h \
+    redisclient.h \
     server.h
 
 FORMS += \

@@ -24,6 +24,8 @@ public:
     QString m_strMvFilePath;
     ShareFile* m_pShareFile;
     QString m_strUploadFilePath;
+    qint64 m_iUploadOffset = 0;     //断点续传偏移量（服务器已收到的字节数）
+    QString m_strDownloadSavePath;  //下载文件保存到本地的路径
     void updateFileList(QList<FileInfo*> pFileList);
     void uploadFile();
     QList<FileInfo*> m_pFileInfoList;
@@ -47,6 +49,8 @@ private slots:
     void on_share_PB_clicked();
 
     void on_upload_PB_clicked();
+
+    void on_download_PB_clicked();
 
 private:
     Ui::File *ui;

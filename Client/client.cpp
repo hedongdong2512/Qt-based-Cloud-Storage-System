@@ -138,6 +138,14 @@ void Client::handlePDU(PDU *pdu)
         return m_prh->uploadFileInit();
     case ENUM_MSG_TYPE_UPLOAD_FILE_DATA_RESPOND:
         return m_prh->uploadFileData();
+    case ENUM_MSG_TYPE_DOWNLOAD_FILE_RESPOND:
+        return m_prh->downloadFileInit();
+    case ENUM_MSG_TYPE_DOWNLOAD_FILE_DATA_REQUEST:
+        return m_prh->downloadFileData();
+    case ENUM_MSG_TYPE_OFFLINE_MSG_RESPOND:
+        return m_prh->offlineMsg();
+    case ENUM_MSG_TYPE_CHAT_RESPOND:
+        return m_prh->chatRespond();
     default:
         break;
     }
@@ -145,7 +153,9 @@ void Client::handlePDU(PDU *pdu)
 
 void Client::startUpload()
 {
-    Uploader* uploader = new Uploader(Index::getInstance().getFile()->m_strUploadFilePath);
+    //带上断点续传偏移量创建上传线程
+    qint64 offset = Index::getInstance().getFile()->m_iUploadOffset;
+    Uploader* uploader = new Uploader(Index::getInstance().getFile()->m_strUploadFilePath, offset);
     connect(uploader, &Uploader::handlError, this, &Client::uploadError);
     connect(uploader, &Uploader::uploadPDU, this, &Client::sendMsg);
     uploader->start();

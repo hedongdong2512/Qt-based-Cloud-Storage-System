@@ -2,8 +2,10 @@
 #include "mytcpserver.h"
 #include "operatedb.h"
 #include "server.h"
+#include "redisclient.h"
 #include <QDebug>
 #include <QDir>
+#include <QFileInfo>
 
 MsgHandler::MsgHandler()
 {
@@ -137,10 +139,28 @@ PDU *MsgHandler::delFriend()
 
 PDU *MsgHandler::chat()
 {
+    char curName[32] = {'\0'};
     char tarName[32] = {'\0'};
+    memcpy(curName, m_pdu->caData, 32);
     memcpy(tarName, m_pdu->caData+32, 32);
-    MyTcpServer::getInstance().resend(tarName, m_pdu);
-    return NULL;
+    //目标在线：直接转发
+    if (MyTcpServer::getInstance().resend(tarName, m_pdu)) {
+        return NULL;
+    }
+    //目标离线：写入Redis离线消息队列，待对方上线时拉取
+    //消息格式："发送者:内容"，Redis key 为 offline:<目标用户名>（List 结构）
+    QString strKey = QString("offline:%1").arg(tarName);
+    QString strValue = QString("%1:%2").arg(curName).arg(QString::fromUtf8(m_pdu->caMsg));
+    bool ret = RedisClient::getInstance().rpush(strKey, strValue);
+    qDebug() << "chat target offline, save to redis" << strKey << strValue << "ret" << ret;
+    //告知发送方：对方不在线，消息已存为离线消息
+    PDU* respdu = mkPDU(ENUM_MSG_TYPE_CHAT_RESPOND, 128);
+    QString strTip = ret
+            ? QString("对方不在线，消息已存为离线消息，对方上线后会收到")
+            : QString("对方不在线，且离线消息保存失败，请稍后重试");
+    QByteArray baTip = strTip.toUtf8();
+    memcpy(respdu->caMsg, baTip.constData(), baTip.size());
+    return respdu;
 }
 
 PDU *MsgHandler::mkdir()
@@ -320,18 +340,38 @@ bool MsgHandler::copyDir(QString strSrcDir, QString strDestDir)
 PDU *MsgHandler::uploadFileInit()
 {
     //文件对象、文件大小、文件已接收大小定义为成员变量
-    //取出文件名和文件大小
+    //取出文件名和文件大小；caData+40 为覆盖标志（1=覆盖重传，0/未设置=尝试续传）
     char caFileName[32] = {'\0'};
     memcpy(caFileName, m_pdu->caData, 32);
     m_iUploadFileSize = 0;
     memcpy(&m_iUploadFileSize, m_pdu->caData+32, sizeof (qint64));
-    //拼接完整路径，创建并打开文件对象
+    char chOverwrite = 0;
+    memcpy(&chOverwrite, m_pdu->caData+40, sizeof (char));
+    //拼接完整路径
     QString strPath = QString("%1/%2").arg(m_pdu->caMsg).arg(caFileName);
     m_fUploadFile.setFileName(strPath);
-    m_iReceiveSize = 0;
-    bool ret = m_fUploadFile.open(QIODevice::WriteOnly);
+    //断点续传：服务器上已有同名文件且未要求覆盖时，从已有大小处续写（Append 模式）
+    qint64 offset = 0;
+    QFileInfo fileInfo(strPath);
+    if (fileInfo.exists() && fileInfo.size() > 0 && chOverwrite != 1) {
+        offset = fileInfo.size();
+        if (offset > m_iUploadFileSize) {
+            offset = 0;     //服务器残留文件比待传文件还大（异常情况），从头重传
+        }
+    }
+    m_iReceiveSize = offset;
+    bool ret = false;
+    if (offset > 0) {
+        ret = m_fUploadFile.open(QIODevice::WriteOnly | QIODevice::Append);
+    } else {
+        ret = m_fUploadFile.open(QIODevice::WriteOnly); //WriteOnly 打开即清空
+    }
+    qDebug() << "uploadFileInit file" << strPath << "size" << m_iUploadFileSize
+             << "resume offset" << offset << "overwrite" << (chOverwrite == 1) << "ret" << ret;
+    //应答：caData[0]=是否成功，caData+8=续传偏移量
     PDU* respdu = mkPDU(ENUM_MSG_TYPE_UPLOAD_FILE_INIT_RESPOND);
     memcpy(respdu->caData, &ret, sizeof(bool));
+    memcpy(respdu->caData+8, &offset, sizeof(qint64));
     return respdu;
 }
 
@@ -350,4 +390,94 @@ PDU *MsgHandler::uploadFileData()
     memcpy(respdu->caData, &ret, sizeof(bool));
     return respdu;
 }
+
+PDU *MsgHandler::downloadFile(QTcpSocket* socket)
+{
+    //caData[0,32) 为文件名，caMsg 为文件所在的服务器目录
+    char caFileName[32] = {'\0'};
+    memcpy(caFileName, m_pdu->caData, 32);
+    QString strPath = QString("%1/%2").arg(QString::fromUtf8(m_pdu->caMsg)).arg(caFileName);
+
+    QFile file(strPath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        //文件打开失败：应答失败标志
+        PDU* respdu = mkPDU(ENUM_MSG_TYPE_DOWNLOAD_FILE_RESPOND);
+        bool ret = false;
+        memcpy(respdu->caData, &ret, sizeof(bool));
+        qDebug() << "downloadFile open failed" << strPath;
+        return respdu;
+    }
+    qint64 fileSize = file.size();
+    //应答：caData[0]=成功标志，caData+8=文件总大小
+    PDU* respdu = mkPDU(ENUM_MSG_TYPE_DOWNLOAD_FILE_RESPOND);
+    bool ret = true;
+    memcpy(respdu->caData, &ret, sizeof(bool));
+    memcpy(respdu->caData+8, &fileSize, sizeof(qint64));
+    socket->write((char*)respdu, respdu->uiPDULen);
+    free(respdu);
+    respdu = NULL;
+    qDebug() << "downloadFile begin" << strPath << "size" << fileSize;
+
+    //分块读取文件内容，逐块推送给客户端
+    while (true) {
+        PDU* pPdu = mkPDU(ENUM_MSG_TYPE_DOWNLOAD_FILE_DATA_REQUEST, 40960);
+        qint64 ret2 = file.read(pPdu->caMsg, 40960);
+        if (ret2 <= 0) {
+            free(pPdu);
+            break;
+        }
+        //最后一块长度可能不足 40960，需要更新长度字段
+        pPdu->uiMsgLen = (uint)ret2;
+        pPdu->uiPDULen = (uint)ret2 + sizeof(PDU);
+        socket->write((char*)pPdu, pPdu->uiPDULen);
+        free(pPdu);
+    }
+    file.close();
+    qDebug() << "downloadFile finished" << strPath;
+    return NULL;    //应答和数据已直接发送
+}
+
+PDU *MsgHandler::offlineMsg()
+{
+    //caData[0,32) 为刚登录的用户名
+    char caName[32] = {'\0'};
+    memcpy(caName, m_pdu->caData, 32);
+    QString strKey = QString("offline:%1").arg(caName);
+    QStringList msgList = RedisClient::getInstance().lrangeAll(strKey);
+    qDebug() << "offlineMsg count" << msgList.size() << "for" << caName;
+
+    //caMsg 布局：每条离线消息 = 发送者名[32字节] + 消息长度[int] + 消息内容
+    int totalLen = 0;
+    foreach (const QString& msg, msgList) {
+        //消息格式："发送者:内容"，按第一个':'拆分
+        int index = msg.indexOf(':');
+        QString text = (index >= 0) ? msg.mid(index+1) : msg;
+        totalLen += 32 + sizeof(int) + text.toUtf8().size() + 1;
+    }
+    PDU* respdu = mkPDU(ENUM_MSG_TYPE_OFFLINE_MSG_RESPOND, totalLen);
+    int count = msgList.size();
+    memcpy(respdu->caData, &count, sizeof(int));
+
+    int offset = 0;
+    foreach (const QString& msg, msgList) {
+        int index = msg.indexOf(':');
+        QString sender = (index >= 0) ? msg.left(index) : "unknown";
+        QString text = (index >= 0) ? msg.mid(index+1) : msg;
+        QByteArray baSender = sender.toUtf8();
+        QByteArray baText = text.toUtf8();
+        int len = baText.size() + 1;
+        memcpy(respdu->caMsg+offset, baSender.constData(), 32);
+        offset += 32;
+        memcpy(respdu->caMsg+offset, &len, sizeof(int));
+        offset += sizeof(int);
+        memcpy(respdu->caMsg+offset, baText.constData(), len);
+        offset += len;
+    }
+    //消息已全部读出，删除Redis中的离线队列
+    if (count > 0) {
+        RedisClient::getInstance().del(strKey);
+    }
+    return respdu;
+}
+
 

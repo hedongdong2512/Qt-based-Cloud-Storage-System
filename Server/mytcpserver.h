@@ -13,7 +13,7 @@ public:
     static MyTcpServer& getInstance();
     void incomingConnection(qintptr handle) override;
     void deleteSocket(MyTcpSocket* mysocket);
-    void resend(char* caTarName, PDU* pdu);
+    bool resend(char* caTarName, PDU* pdu);
     QThreadPool threadPool;
 private:
     MyTcpServer();
